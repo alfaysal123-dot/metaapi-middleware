@@ -1,5 +1,6 @@
-import express from "express";
-import MetaApi from "metaapi.cloud-sdk";
+const express = require("express");
+const MetaApi = require("metaapi.cloud-sdk").default;
+
 
 const app = express();
 app.use(express.json());

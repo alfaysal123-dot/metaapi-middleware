@@ -1,8 +1,11 @@
 const express = require("express");
 const MetaApi = require("metaapi.cloud-sdk").default;
 
-const app = express();
-app.use(express.json());
+
+
+// مهم جداً لـ Render:
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
 // --------------------------------------------------
 // 🔐 ضع التوكن الخاص بك

@@ -89,6 +89,8 @@ app.post("/sell", async (req, res) => {
 // --------------------------------------------------
 app.post("/order", async (req, res) => {
   try {
+    console.log("📩 Incoming Body:", req.body);
+
     const { symbol, side, lot, sl, tp, comment } = req.body;
 
     if (!symbol || !side || !lot) {

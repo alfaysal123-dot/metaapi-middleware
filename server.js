@@ -120,6 +120,8 @@ app.post("/order", async (req, res) => {
 // --------------------------------------------------
 // SERVER START
 // --------------------------------------------------
-app.listen(10000, () => {
-  console.log("MetaApi middleware running on port 10000");
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log("MetaApi middleware running on port " + PORT);
+
 });

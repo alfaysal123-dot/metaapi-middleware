@@ -89,8 +89,6 @@ app.post("/sell", async (req, res) => {
 // --------------------------------------------------
 app.post("/order", async (req, res) => {
   try {
-    console.log("📩 Incoming Body:", req.body);
-
     const { symbol, side, lot, sl, tp, comment } = req.body;
 
     if (!symbol || !side || !lot) {
@@ -100,18 +98,20 @@ app.post("/order", async (req, res) => {
     const conn = await getConnection();
     let result;
 
+    // تأكد أن SL/TP أرقام صحيحة
+    const stopLoss = sl ? Number(sl) : undefined;
+    const takeProfit = tp ? Number(tp) : undefined;
+
+    const orderOptions = {
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      comment: comment || "n8n-auto"
+    };
+
     if (side.toUpperCase() === "BUY") {
-      result = await conn.createMarketBuyOrder(symbol, lot, {
-        stopLoss: sl,
-        takeProfit: tp,
-        comment: comment || "n8n-auto"
-      });
+      result = await conn.createMarketBuyOrder(symbol, Number(lot), orderOptions);
     } else if (side.toUpperCase() === "SELL") {
-      result = await conn.createMarketSellOrder(symbol, lot, {
-        stopLoss: sl,
-        takeProfit: tp,
-        comment: comment || "n8n-auto"
-      });
+      result = await conn.createMarketSellOrder(symbol, Number(lot), orderOptions);
     } else {
       return res.status(400).json({ error: "Invalid side, must be BUY or SELL" });
     }
@@ -122,6 +122,7 @@ app.post("/order", async (req, res) => {
     res.status(500).json({ error: error.toString() });
   }
 });
+
 
 // --------------------------------------------------
 // SERVER START

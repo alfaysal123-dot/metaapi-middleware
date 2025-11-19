@@ -96,22 +96,19 @@ app.post("/order", async (req, res) => {
     }
 
     const conn = await getConnection();
-    let result;
 
-    // تأكد أن SL/TP أرقام صحيحة
-    const stopLoss = sl ? Number(sl) : undefined;
-    const takeProfit = tp ? Number(tp) : undefined;
-
-    const orderOptions = {
-      stopLoss: stopLoss,
-      takeProfit: takeProfit,
+    const params = {
+      stopLossPrice: sl ? Number(sl) : undefined,
+      takeProfitPrice: tp ? Number(tp) : undefined,
       comment: comment || "n8n-auto"
     };
 
+    let result;
+
     if (side.toUpperCase() === "BUY") {
-      result = await conn.createMarketBuyOrder(symbol, Number(lot), orderOptions);
+      result = await conn.createMarketBuyOrder(symbol, Number(lot), params);
     } else if (side.toUpperCase() === "SELL") {
-      result = await conn.createMarketSellOrder(symbol, Number(lot), orderOptions);
+      result = await conn.createMarketSellOrder(symbol, Number(lot), params);
     } else {
       return res.status(400).json({ error: "Invalid side, must be BUY or SELL" });
     }
@@ -119,9 +116,11 @@ app.post("/order", async (req, res) => {
     res.json({ status: "success", order: result });
 
   } catch (error) {
+    console.error(error);
     res.status(500).json({ error: error.toString() });
   }
 });
+
 
 
 // --------------------------------------------------

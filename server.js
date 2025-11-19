@@ -91,33 +91,49 @@ app.post("/order", async (req, res) => {
   try {
     const { symbol, side, lot, sl, tp, comment } = req.body;
 
+    // Validation
     if (!symbol || !side || !lot) {
-      return res.status(400).json({ error: "Missing symbol/side/lot" });
+      return res.status(400).json({ error: "symbol, side, lot are required" });
     }
 
     const conn = await getConnection();
 
-    const params = {
-      stopLossPrice: sl ? Number(sl) : undefined,
-      takeProfitPrice: tp ? Number(tp) : undefined,
-      comment: comment || "n8n-auto"
-    };
+    let order;
+    const volume = Number(lot);
 
-    let result;
-
+    // STEP 1 — Execute Market Order
     if (side.toUpperCase() === "BUY") {
-      result = await conn.createMarketBuyOrder(symbol, Number(lot), params);
+      order = await conn.createMarketBuyOrder(symbol, volume, {
+        comment: comment || "n8n-auto",
+      });
     } else if (side.toUpperCase() === "SELL") {
-      result = await conn.createMarketSellOrder(symbol, Number(lot), params);
+      order = await conn.createMarketSellOrder(symbol, volume, {
+        comment: comment || "n8n-auto",
+      });
     } else {
-      return res.status(400).json({ error: "Invalid side, must be BUY or SELL" });
+      return res.status(400).json({ error: "Invalid side (BUY/SELL)" });
     }
 
-    res.json({ status: "success", order: result });
+    // STEP 2 — Apply SL/TP (Cloud-G2 requires modifyPosition)
+    if (order && order.positionId && (sl || tp)) {
+      await conn.modifyPosition(order.positionId, {
+        stopLoss: sl ? Number(sl) : undefined,
+        takeProfit: tp ? Number(tp) : undefined,
+      });
+    }
 
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.toString() });
+    return res.json({
+      status: "success",
+      order: order,
+      sl: sl,
+      tp: tp,
+      message: "Order executed + SL/TP applied",
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.toString(),
+    });
   }
 });
 

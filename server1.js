@@ -15,7 +15,7 @@ const token = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI5MWJiYTE1YTJiZGJk
 const accountId = "86e4468f-a57d-489e-a22a-db66cd70a3cb";
 
 // --------------------------------------------------
-// MetaApi SDK
+// Initialize MetaApi
 // --------------------------------------------------
 const api = new MetaApi(token);
 
@@ -23,6 +23,7 @@ const api = new MetaApi(token);
 // CONNECT FUNCTION
 // --------------------------------------------------
 async function getConnection() {
+  console.log("\n\n============== NEW REQUEST ==============");
   console.log("🔌 Connecting to MetaApi ...");
 
   const account = await api.metatraderAccountApi.getAccount(accountId);
@@ -33,163 +34,184 @@ async function getConnection() {
   await conn.waitSynchronized();
 
   console.log("✅ Connected & Synchronized");
-
   return conn;
 }
 
 // --------------------------------------------------
-// ACCOUNT INFO
+// Helper: Calculate price from pips
 // --------------------------------------------------
-app.get("/account", async (req, res) => {
-  try {
-    const conn = await getConnection();
-    const info = await conn.getAccountInformation();
-    res.json(info);
-  } catch (error) {
-    console.log("❌ /account error:", error);
-    res.status(500).json({ error: error.toString() });
-  }
+function calcPrice(price, pips, direction, symbol) {
+  const pipValue = symbol.includes("JPY") ? 0.01 : 0.0001;
+  return direction === "minus"
+    ? price - pips * pipValue
+    : price + pips * pipValue;
+}
+
+// --------------------------------------------------
+// ROOT
+// --------------------------------------------------
+app.get("/", (req, res) => {
+  res.json({
+    status: "MetaApi Server v3.0 Running",
+    endpoints: {
+      "POST /order": "Open trade with SL/TP",
+      "GET /positions": "List open positions",
+      "POST /close": "Close trade",
+      "POST /price": "Get price"
+    }
+  });
 });
 
 // --------------------------------------------------
-// PRICE
-// --------------------------------------------------
-app.post("/price", async (req, res) => {
-  console.log("📩 Incoming Body (PRICE):", req.body);
-
-  try {
-    const symbol = req.body.symbol || "EURUSD";
-    const conn = await getConnection();
-    const price = await conn.getSymbolPrice(symbol);
-    res.json(price);
-  } catch (error) {
-    console.log("❌ /price error:", error);
-    res.status(500).json({ error: error.toString() });
-  }
-});
-
-// --------------------------------------------------
-// RAW BUY
-// --------------------------------------------------
-app.post("/buy", async (req, res) => {
-  try {
-    const { symbol = "EURUSD", volume = 0.1 } = req.body;
-    const conn = await getConnection();
-    const result = await conn.createMarketBuyOrder(symbol, volume);
-    res.json(result);
-  } catch (error) {
-    console.log("❌ /buy error:", error);
-    res.status(500).json({ error: error.toString() });
-  }
-});
-
-// --------------------------------------------------
-// RAW SELL
-// --------------------------------------------------
-app.post("/sell", async (req, res) => {
-  try {
-    const { symbol = "EURUSD", volume = 0.1 } = req.body;
-    const conn = await getConnection();
-    const result = await conn.createMarketSellOrder(symbol, volume);
-    res.json(result);
-  } catch (error) {
-    console.log("❌ /sell error:", error);
-    res.status(500).json({ error: error.toString() });
-  }
-});
-
-// --------------------------------------------------
-// ⭐ FULL ORDER (MARKET + SL/TP)
+// 🟦 ORDER ENDPOINT
 // --------------------------------------------------
 app.post("/order", async (req, res) => {
-  console.log("📩 Incoming Order Body:", req.body);
+  console.log("📩 Incoming Order Body:", JSON.stringify(req.body, null, 2));
 
   try {
-    const { symbol, side, lot, sl, tp, comment } = req.body;
+    const { symbol, side, lot, sl, tp, slPips, tpPips, comment } = req.body;
 
     if (!symbol || !side || !lot) {
-      console.log("❌ Missing required params");
-      return res.status(400).json({ error: "symbol, side, lot are required" });
+      return res.status(400).json({
+        success: false,
+        error: "Missing fields: symbol, side, lot are required!"
+      });
     }
 
     const conn = await getConnection();
     const volume = Number(lot);
 
-    let order;
+    // Fetch price
+    const priceData = await conn.getSymbolPrice(symbol);
+    const currentPrice =
+      side.toUpperCase() === "BUY" ? priceData.ask : priceData.bid;
+
+    console.log(`💰 Current Price for ${symbol}: ${currentPrice}`);
+
+    // SL & TP final variables
+    let stopLoss = null;
+    let takeProfit = null;
+
+    // Direct SL/TP
+    if (sl) stopLoss = Number(sl);
+    if (tp) takeProfit = Number(tp);
+
+    // Pips-based SL/TP
+    if (slPips) {
+      stopLoss =
+        side.toUpperCase() === "BUY"
+          ? calcPrice(currentPrice, slPips, "minus", symbol)
+          : calcPrice(currentPrice, slPips, "plus", symbol);
+    }
+    if (tpPips) {
+      takeProfit =
+        side.toUpperCase() === "BUY"
+          ? calcPrice(currentPrice, tpPips, "plus", symbol)
+          : calcPrice(currentPrice, tpPips, "minus", symbol);
+    }
+
+    if (stopLoss) stopLoss = Number(stopLoss.toFixed(5));
+    if (takeProfit) takeProfit = Number(takeProfit.toFixed(5));
+
+    console.log(`📊 Final SL: ${stopLoss}`);
+    console.log(`📊 Final TP: ${takeProfit}`);
 
     // --------------------------------------------------
-    // 1️⃣ Execute the order (BUY/SELL)
+    // STEP 1 — Open Market Order WITHOUT SL/TP
     // --------------------------------------------------
-    console.log("🚀 Creating Market Order...");
+    let order;
+
+    console.log(`🚀 Opening ${side.toUpperCase()} order...`);
 
     if (side.toUpperCase() === "BUY") {
       order = await conn.createMarketBuyOrder(symbol, volume, {
-        comment: comment || "n8n-auto",
+        comment
       });
     } else {
       order = await conn.createMarketSellOrder(symbol, volume, {
-        comment: comment || "n8n-auto",
+        comment
       });
     }
 
-    console.log("📌 Order Result:", order);
+    console.log("📌 Order Response:", order);
+
+    if (!order.positionId) {
+      throw new Error("❌ No positionId returned from MetaApi – cannot modify SL/TP!");
+    }
 
     // --------------------------------------------------
-    // 2️⃣ Wait for server to register the position
+    // STEP 2 — Wait 1 sec then modify SL/TP
     // --------------------------------------------------
-    console.log("⏳ Waiting 1 second...");
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // --------------------------------------------------
-    // 3️⃣ Fetch open positions
-    // --------------------------------------------------
-    const positions = await conn.getPositions();
-    console.log("📊 Positions:", positions);
+    console.log("🛠️ Applying SL/TP to position:", order.positionId);
 
-    // Try to get by order.positionId first
-    let position = positions.find((p) => p.id === order.positionId);
-
-    // Fallback: find by symbol
-    if (!position) {
-      position = positions.find((p) => p.symbol === symbol);
-    }
-
-    if (!position) {
-      console.log("❌ No position found after execution");
-      return res.json({
-        status: "warning",
-        message: "Order executed but no open position found",
-        order,
-      });
-    }
-
-    console.log("🎯 Position Found:", position);
-
-    // --------------------------------------------------
-    // 4️⃣ Modify position (SL/TP)
-    // --------------------------------------------------
-    console.log("🛠️ Applying SL/TP...");
-
-    const modify = await conn.modifyPosition(position.id, {
-      stopLoss: sl ? Number(sl) : undefined,
-      takeProfit: tp ? Number(tp) : undefined,
+    const modifyResult = await conn.modifyPosition(order.positionId, {
+      stopLoss: stopLoss || undefined,
+      takeProfit: takeProfit || undefined
     });
 
-    console.log("✅ Modify Result:", modify);
+    console.log("🔧 Modify Result:", modifyResult);
 
-    // --------------------------------------------------
-    // 5️⃣ Done
-    // --------------------------------------------------
-    res.json({
-      status: "success",
-      order,
-      position,
-      modify,
-      message: "Order executed + SL/TP applied",
+    return res.json({
+      success: true,
+      message: "Trade executed successfully with SL/TP",
+      symbol,
+      side,
+      lot,
+      stopLoss,
+      takeProfit,
+      positionId: order.positionId,
+      orderMeta: order,
+      modify: modifyResult
     });
 
   } catch (err) {
-    console.log("❌ /order error:", err.toString());
+    console.log("❌ ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      error: err.toString()
+    });
+  }
+});
+
+// --------------------------------------------------
+// POSITIONS
+// --------------------------------------------------
+app.get("/positions", async (req, res) => {
+  try {
+    const conn = await getConnection();
+    const positions = await conn.getPositions();
+
+    res.json({
+      count: positions.length,
+      positions
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.toString() });
+  }
+});
+
+// --------------------------------------------------
+// CLOSE POSITION
+// --------------------------------------------------
+app.post("/close", async (req, res) => {
+  try {
+    const { positionId } = req.body;
+
+    if (!positionId) {
+      return res.status(400).json({ error: "positionId is required!" });
+    }
+
+    const conn = await getConnection();
+    const result = await conn.closePosition(positionId);
+
+    res.json({
+      success: true,
+      result
+    });
+  } catch (err) {
     res.status(500).json({ error: err.toString() });
   }
 });
@@ -199,5 +221,6 @@ app.post("/order", async (req, res) => {
 // --------------------------------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log("🚀 MetaApi middleware running on port " + PORT);
+  console.log(`🚀 MetaApi Server v3.0 running on port ${PORT}`);
 });
+

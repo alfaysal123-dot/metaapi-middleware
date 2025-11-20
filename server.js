@@ -4,7 +4,7 @@ const MetaApi = require("metaapi.cloud-sdk").default;
 const app = express();
 
 // --------------------------------------------------
-// REQUIRED FOR RENDER (Fix JSON & limits errors)
+// REQUIRED FOR RENDER
 // --------------------------------------------------
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
@@ -35,17 +35,76 @@ async function getConnection() {
 }
 
 // --------------------------------------------------
-// HELPER: Calculate SL/TP from pips
+// 🧠 SMART PIP VALUE CALCULATOR - يدعم كل الأزواج
 // --------------------------------------------------
-function calculatePrice(currentPrice, pips, direction, symbol) {
-  // Determine pip value (0.0001 for most pairs, 0.01 for JPY pairs)
-  const pipValue = symbol.includes('JPY') ? 0.01 : 0.0001;
+function getPipValue(symbol) {
+  const sym = symbol.toUpperCase();
   
-  if (direction === 'sl_buy' || direction === 'tp_sell') {
-    return currentPrice - (pips * pipValue);
-  } else {
-    return currentPrice + (pips * pipValue);
+  // 🥇 Gold & Silver (المعادن)
+  if (sym.includes('XAU')) {
+    return { pip: 0.10, decimals: 2, name: 'Gold' };
   }
+  if (sym.includes('XAG')) {
+    return { pip: 0.01, decimals: 3, name: 'Silver' };
+  }
+  
+  // 🛢️ Oil (النفط)
+  if (sym.includes('OIL') || sym.includes('WTI') || sym.includes('BRENT')) {
+    return { pip: 0.01, decimals: 2, name: 'Oil' };
+  }
+  
+  // 💎 Indices (المؤشرات)
+  if (sym.includes('US30') || sym.includes('DOW')) {
+    return { pip: 1.0, decimals: 0, name: 'US30' };
+  }
+  if (sym.includes('NAS100') || sym.includes('NDX')) {
+    return { pip: 1.0, decimals: 0, name: 'NAS100' };
+  }
+  if (sym.includes('SPX') || sym.includes('US500')) {
+    return { pip: 0.1, decimals: 1, name: 'S&P500' };
+  }
+  if (sym.includes('GER') || sym.includes('DAX')) {
+    return { pip: 1.0, decimals: 0, name: 'DAX' };
+  }
+  
+  // ₿ Crypto (العملات الرقمية)
+  if (sym.includes('BTC')) {
+    return { pip: 1.0, decimals: 2, name: 'Bitcoin' };
+  }
+  if (sym.includes('ETH')) {
+    return { pip: 0.1, decimals: 2, name: 'Ethereum' };
+  }
+  
+  // 🇯🇵 JPY Pairs (أزواج الين)
+  if (sym.includes('JPY')) {
+    return { pip: 0.01, decimals: 3, name: 'JPY Pair' };
+  }
+  
+  // 💱 Regular Forex (العملات العادية)
+  // EUR/USD, GBP/USD, AUD/USD, etc.
+  return { pip: 0.0001, decimals: 5, name: 'Forex' };
+}
+
+// --------------------------------------------------
+// 📊 CALCULATE PRICE FROM PIPS
+// --------------------------------------------------
+function calculatePriceFromPips(currentPrice, pips, direction, symbol) {
+  const config = getPipValue(symbol);
+  const priceChange = pips * config.pip;
+  
+  console.log(`📐 Symbol: ${symbol} (${config.name})`);
+  console.log(`   Pip Value: ${config.pip}`);
+  console.log(`   Pips: ${pips}`);
+  console.log(`   Price Change: ${priceChange}`);
+  
+  let finalPrice;
+  if (direction === 'subtract') {
+    finalPrice = currentPrice - priceChange;
+  } else {
+    finalPrice = currentPrice + priceChange;
+  }
+  
+  return Number(finalPrice.toFixed(config.decimals));
 }
 
 // --------------------------------------------------
@@ -53,12 +112,19 @@ function calculatePrice(currentPrice, pips, direction, symbol) {
 // --------------------------------------------------
 app.get("/", (req, res) => {
   res.json({ 
-    status: "✅ MetaAPI Trading Server Running",
-    version: "2.0",
+    status: "✅ Universal MetaAPI Trading Server",
+    version: "3.0 - All Symbols Supported",
+    supported: {
+      forex: "EUR/USD, GBP/USD, USD/JPY, etc.",
+      metals: "XAU/USD (Gold), XAG/USD (Silver)",
+      indices: "US30, NAS100, SPX500, DAX",
+      oil: "WTI, Brent",
+      crypto: "BTC/USD, ETH/USD"
+    },
     endpoints: {
       "GET /account": "Get account info",
       "POST /price": "Get symbol price",
-      "POST /order": "Open trade with SL/TP",
+      "POST /order": "Open trade - supports (sl/tp) OR (slPips/tpPips)",
       "GET /positions": "Get open positions",
       "POST /close": "Close position"
     }
@@ -105,7 +171,14 @@ app.post("/price", async (req, res) => {
     const symbol = req.body.symbol || "EURUSD";
     const conn = await getConnection();
     const price = await conn.getSymbolPrice(symbol);
-    res.json(price);
+    
+    // Add pip info
+    const config = getPipValue(symbol);
+    res.json({
+      ...price,
+      pipValue: config.pip,
+      type: config.name
+    });
   } catch (error) {
     console.log("❌ /price error:", error);
     res.status(500).json({ error: error.toString() });
@@ -113,20 +186,25 @@ app.post("/price", async (req, res) => {
 });
 
 // --------------------------------------------------
-// ⭐ MAIN ORDER ENDPOINT (WITH SL/TP)
+// ⭐ UNIVERSAL ORDER ENDPOINT - يدعم كل الأزواج
 // --------------------------------------------------
 app.post("/order", async (req, res) => {
-  console.log("📩 Incoming Order Body:", JSON.stringify(req.body, null, 2));
+  console.log("📩 Incoming Order:", JSON.stringify(req.body, null, 2));
 
   try {
     const { symbol, side, lot, sl, tp, slPips, tpPips, comment } = req.body;
 
     // Validation
     if (!symbol || !side || !lot) {
-      console.log("❌ Missing required params");
       return res.status(400).json({ 
-        error: "Required: symbol, side, lot",
-        received: req.body
+        error: "Required fields: symbol, side, lot",
+        example: {
+          symbol: "EURUSD",
+          side: "BUY",
+          lot: 0.01,
+          slPips: 20,
+          tpPips: 40
+        }
       });
     }
 
@@ -139,45 +217,44 @@ app.post("/order", async (req, res) => {
     
     console.log(`💰 Current Price for ${symbol}: ${currentPrice}`);
 
+    // Get symbol configuration
+    const config = getPipValue(symbol);
+    console.log(`🎯 Detected: ${config.name} (pip = ${config.pip})`);
+
     // Calculate SL/TP
     let stopLoss = null;
     let takeProfit = null;
 
-    // Option 1: Using exact prices
-    if (sl) {
+    // Priority 1: Direct prices (إذا أرسلت سعر مباشر)
+    if (sl !== undefined && sl !== null) {
       stopLoss = Number(sl);
-      console.log(`🛑 SL from exact price: ${stopLoss}`);
+      console.log(`🛑 SL from direct price: ${stopLoss}`);
     }
-    if (tp) {
+    if (tp !== undefined && tp !== null) {
       takeProfit = Number(tp);
-      console.log(`🎯 TP from exact price: ${takeProfit}`);
+      console.log(`🎯 TP from direct price: ${takeProfit}`);
     }
 
-    // Option 2: Using pips (overrides exact prices if provided)
-    if (slPips) {
-      const direction = side.toUpperCase() === "BUY" ? 'sl_buy' : 'sl_sell';
-      stopLoss = calculatePrice(currentPrice, Number(slPips), direction, symbol);
+    // Priority 2: Calculate from pips (إذا أرسلت بالبيبس)
+    if (slPips !== undefined && slPips !== null) {
+      const direction = side.toUpperCase() === "BUY" ? 'subtract' : 'add';
+      stopLoss = calculatePriceFromPips(currentPrice, Number(slPips), direction, symbol);
       console.log(`🛑 SL calculated from ${slPips} pips: ${stopLoss}`);
     }
-    if (tpPips) {
-      const direction = side.toUpperCase() === "BUY" ? 'tp_buy' : 'tp_sell';
-      takeProfit = calculatePrice(currentPrice, Number(tpPips), direction, symbol);
+    
+    if (tpPips !== undefined && tpPips !== null) {
+      const direction = side.toUpperCase() === "BUY" ? 'add' : 'subtract';
+      takeProfit = calculatePriceFromPips(currentPrice, Number(tpPips), direction, symbol);
       console.log(`🎯 TP calculated from ${tpPips} pips: ${takeProfit}`);
     }
 
-    // Round to proper decimal places
-    if (stopLoss) stopLoss = Number(stopLoss.toFixed(5));
-    if (takeProfit) takeProfit = Number(takeProfit.toFixed(5));
+    console.log(`📊 Final SL: ${stopLoss}, TP: ${takeProfit}`);
 
-    console.log(`📊 Final Values - SL: ${stopLoss}, TP: ${takeProfit}`);
-
-    // Execute order with SL/TP directly
+    // Execute order
     let result;
-    const orderOptions = {
-      comment: comment || "n8n-auto"
-    };
+    const orderOptions = { comment: comment || "n8n-auto" };
 
-    console.log(`🚀 Creating ${side.toUpperCase()} order...`);
+    console.log(`🚀 Executing ${side.toUpperCase()} order...`);
 
     if (side.toUpperCase() === "BUY") {
       result = await conn.createMarketBuyOrder(
@@ -197,33 +274,33 @@ app.post("/order", async (req, res) => {
       );
     }
 
-    console.log("✅ Order Result:", JSON.stringify(result, null, 2));
+    console.log("✅ Order Executed Successfully!");
 
-    // Return success with all details
+    // Success response
     res.json({
       success: true,
-      message: "Order executed with SL/TP",
+      message: `${config.name} order executed with SL/TP`,
       order: {
         orderId: result.orderId,
         positionId: result.positionId,
         symbol: symbol,
+        symbolType: config.name,
         side: side.toUpperCase(),
         volume: volume,
         openPrice: currentPrice,
         stopLoss: stopLoss,
         takeProfit: takeProfit,
+        pipValue: config.pip,
         comment: comment || "n8n-auto"
       },
-      rawResult: result
+      raw: result
     });
 
   } catch (err) {
-    console.log("❌ /order error:", err.toString());
-    console.log("❌ Full error:", err);
+    console.log("❌ Order Error:", err.toString());
     res.status(500).json({ 
       success: false,
-      error: err.toString(),
-      message: err.message,
+      error: err.message || err.toString(),
       details: err
     });
   }
@@ -233,7 +310,7 @@ app.post("/order", async (req, res) => {
 // CLOSE POSITION
 // --------------------------------------------------
 app.post("/close", async (req, res) => {
-  console.log("📩 Close Position Body:", req.body);
+  console.log("📩 Close Request:", req.body);
 
   try {
     const { positionId } = req.body;
@@ -247,7 +324,7 @@ app.post("/close", async (req, res) => {
     const conn = await getConnection();
     const result = await conn.closePosition(positionId);
 
-    console.log("✅ Position closed:", result);
+    console.log("✅ Position Closed");
 
     res.json({
       success: true,
@@ -256,7 +333,7 @@ app.post("/close", async (req, res) => {
     });
 
   } catch (err) {
-    console.log("❌ /close error:", err);
+    console.log("❌ Close Error:", err);
     res.status(500).json({ 
       success: false,
       error: err.toString() 
@@ -269,6 +346,7 @@ app.post("/close", async (req, res) => {
 // --------------------------------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 MetaApi Server v2.0 running on port ${PORT}`);
-  console.log(`📡 Ready to receive orders with SL/TP`);
+  console.log(`🚀 Universal Trading Server v3.0 running on port ${PORT}`);
+  console.log(`📡 Supports: Forex, Metals, Indices, Oil, Crypto`);
+  console.log(`🎯 Smart pip calculation for all symbols`);
 });

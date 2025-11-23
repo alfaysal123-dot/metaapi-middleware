@@ -126,6 +126,7 @@ app.get("/", (req, res) => {
       "POST /price": "Get symbol price",
       "POST /order": "Open trade - supports (sl/tp) OR (slPips/tpPips)",
       "GET /positions": "Get open positions",
+      "GET /trades": "Get past trades/deals (history)",
       "POST /close": "Close position"
     }
   });
@@ -340,6 +341,67 @@ app.post("/close", async (req, res) => {
     });
   }
 });
+
+// --------------------------------------------------
+// GET TRADES / DEALS HISTORY
+// --------------------------------------------------
+async function getDealsSafe(conn, startTime, endTime) {
+  // MetaApi has slightly different method names depending on connection type/version.
+  if (typeof conn.getDealsByTimeRange === "function") {
+    return await conn.getDealsByTimeRange(startTime, endTime);
+  }
+  if (typeof conn.getDeals === "function") {
+    return await conn.getDeals(startTime, endTime);
+  }
+  if (typeof conn.getHistoryDealsByTimeRange === "function") {
+    return await conn.getHistoryDealsByTimeRange(startTime, endTime);
+  }
+  if (typeof conn.getHistoryDeals === "function") {
+    return await conn.getHistoryDeals(startTime, endTime);
+  }
+
+  throw new Error("No deals/trades history method found on MetaApi connection.");
+}
+
+app.get("/trades", async (req, res) => {
+  try {
+    const conn = await getConnection();
+
+    // Params:
+    // ?symbol=XAUUSD  (optional)
+    // ?days=7         (optional, default 7)
+    const symbol = (req.query.symbol || "").toUpperCase();
+    const days = Number(req.query.days || 7);
+
+    const endTime = new Date();
+    const startTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const deals = await getDealsSafe(conn, startTime, endTime);
+
+    // Normalize output for n8n agent
+    const normalized = (deals || [])
+      .filter(d => !symbol || (d.symbol || d._symbol || "").toUpperCase() === symbol)
+      .map(d => ({
+        symbol: (d.symbol || d._symbol || symbol || "XAUUSD"),
+        qty: Number(d.volume || d.lot || d.quantity || 0),
+        pnl: Number(d.profit || d.pnl || 0),
+        side: (d.type || d.side || d.entryType || "").toString().toUpperCase(),
+        time: d.time || d.closeTime || d.openTime || null,
+        id: d.id || d.dealId || d.orderId || null
+      }));
+
+    res.json({
+      count: normalized.length,
+      symbolFilter: symbol || null,
+      daysBack: days,
+      trades: normalized
+    });
+  } catch (error) {
+    console.log("❌ /trades error:", error);
+    res.status(500).json({ error: error.toString() });
+  }
+});
+
 
 // --------------------------------------------------
 // START SERVER

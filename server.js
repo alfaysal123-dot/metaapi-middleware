@@ -346,7 +346,6 @@ app.post("/close", async (req, res) => {
 // GET TRADES / DEALS HISTORY
 // --------------------------------------------------
 async function getDealsSafe(conn, startTime, endTime) {
-  // MetaApi has slightly different method names depending on connection type/version.
   if (typeof conn.getDealsByTimeRange === "function") {
     return await conn.getDealsByTimeRange(startTime, endTime);
   }
@@ -359,27 +358,42 @@ async function getDealsSafe(conn, startTime, endTime) {
   if (typeof conn.getHistoryDeals === "function") {
     return await conn.getHistoryDeals(startTime, endTime);
   }
-
   throw new Error("No deals/trades history method found on MetaApi connection.");
+}
+
+// ✅ Normalize ANY MetaApi response shape to an array
+function normalizeToArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+
+  // common wrappers
+  for (const key of ["deals", "historyDeals", "items", "data", "result"]) {
+    if (Array.isArray(raw[key])) return raw[key];
+  }
+
+  // sometimes it's a map: { "123": {...}, "124": {...} }
+  const vals = Object.values(raw);
+  if (vals.length && vals.every(v => v && typeof v === "object" && !Array.isArray(v))) {
+    return vals;
+  }
+
+  return [];
 }
 
 app.get("/trades", async (req, res) => {
   try {
     const conn = await getConnection();
 
-    // Params:
-    // ?symbol=XAUUSD  (optional)
-    // ?days=7         (optional, default 7)
     const symbol = (req.query.symbol || "").toUpperCase();
     const days = Number(req.query.days || 7);
 
     const endTime = new Date();
     const startTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const deals = await getDealsSafe(conn, startTime, endTime);
+    const rawDeals = await getDealsSafe(conn, startTime, endTime);
+    const dealsArr = normalizeToArray(rawDeals);
 
-    // Normalize output for n8n agent
-    const normalized = (deals || [])
+    const normalized = dealsArr
       .filter(d => !symbol || (d.symbol || d._symbol || "").toUpperCase() === symbol)
       .map(d => ({
         symbol: (d.symbol || d._symbol || symbol || "XAUUSD"),
@@ -401,6 +415,7 @@ app.get("/trades", async (req, res) => {
     res.status(500).json({ error: error.toString() });
   }
 });
+
 
 
 // --------------------------------------------------

@@ -106,6 +106,38 @@ function calculatePriceFromPips(currentPrice, pips, direction, symbol) {
   
   return Number(finalPrice.toFixed(config.decimals));
 }
+// --------------------------------------------------
+// 🧹 NORMALIZE TRADES HELPER
+// --------------------------------------------------
+function normalizeTrades(trades, symbolFilter = null) {
+  const arr = Array.isArray(trades) ? trades : [];
+
+  // 1) فلترة أساسية
+  let cleaned = arr.filter(t =>
+    t &&
+    t.side !== "DEAL_TYPE_BALANCE" &&
+    Number(t.qty || 0) > 0
+  );
+
+  // 2) فلتر رمز اختياري
+  if (symbolFilter) {
+    const sym = symbolFilter.toUpperCase();
+    cleaned = cleaned.filter(t => (t.symbol || "").toUpperCase() === sym);
+  }
+
+  // 3) حساب الربح التراكمي لكل رمز
+  const cumulativePnlBySymbol = {};
+  for (const t of cleaned) {
+    const s = (t.symbol || "UNKNOWN").toUpperCase();
+    cumulativePnlBySymbol[s] =
+      (cumulativePnlBySymbol[s] || 0) + Number(t.pnl || 0);
+  }
+
+  return {
+    cleaned,
+    cumulativePnlBySymbol
+  };
+}
 
 // --------------------------------------------------
 // ROOT
@@ -343,78 +375,57 @@ app.post("/close", async (req, res) => {
 });
 
 // --------------------------------------------------
-// GET TRADES / DEALS HISTORY
+// GET TRADES / DEALS HISTORY (Normalized)
 // --------------------------------------------------
-async function getDealsSafe(conn, startTime, endTime) {
-  if (typeof conn.getDealsByTimeRange === "function") {
-    return await conn.getDealsByTimeRange(startTime, endTime);
-  }
-  if (typeof conn.getDeals === "function") {
-    return await conn.getDeals(startTime, endTime);
-  }
-  if (typeof conn.getHistoryDealsByTimeRange === "function") {
-    return await conn.getHistoryDealsByTimeRange(startTime, endTime);
-  }
-  if (typeof conn.getHistoryDeals === "function") {
-    return await conn.getHistoryDeals(startTime, endTime);
-  }
-  throw new Error("No deals/trades history method found on MetaApi connection.");
-}
-
-// ✅ Normalize ANY MetaApi response shape to an array
-function normalizeToArray(raw) {
-  if (Array.isArray(raw)) return raw;
-  if (!raw || typeof raw !== "object") return [];
-
-  // common wrappers
-  for (const key of ["deals", "historyDeals", "items", "data", "result"]) {
-    if (Array.isArray(raw[key])) return raw[key];
-  }
-
-  // sometimes it's a map: { "123": {...}, "124": {...} }
-  const vals = Object.values(raw);
-  if (vals.length && vals.every(v => v && typeof v === "object" && !Array.isArray(v))) {
-    return vals;
-  }
-
-  return [];
-}
-
 app.get("/trades", async (req, res) => {
   try {
     const conn = await getConnection();
 
-    const symbol = (req.query.symbol || "").toUpperCase();
-    const days = Number(req.query.days || 7);
+    // Query params
+    const daysBack = Number(req.query.daysBack || 7);
+    const symbolFilter = req.query.symbol || null;
 
+    // Time range
     const endTime = new Date();
-    const startTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const startTime = new Date();
+    startTime.setDate(endTime.getDate() - daysBack);
 
-    const rawDeals = await getDealsSafe(conn, startTime, endTime);
-    const dealsArr = normalizeToArray(rawDeals);
+    // ✅ جلب الـ deals من MetaApi
+    // بعض نسخ الـ SDK بتستخدم getDealsByTimeRange
+    // إذا عندك اسم مختلف (مثلاً getDealsByTimeRangeUtc) بدّله هون فقط
+    const deals = await conn.getDealsByTimeRange(startTime, endTime);
 
-    const normalized = dealsArr
-      .filter(d => !symbol || (d.symbol || d._symbol || "").toUpperCase() === symbol)
-      .map(d => ({
-        symbol: (d.symbol || d._symbol || symbol || "XAUUSD"),
-        qty: Number(d.volume || d.lot || d.quantity || 0),
-        pnl: Number(d.profit || d.pnl || 0),
-        side: (d.type || d.side || d.entryType || "").toString().toUpperCase(),
-        time: d.time || d.closeTime || d.openTime || null,
-        id: d.id || d.dealId || d.orderId || null
-      }));
+    // تأكيد array قبل الفلترة (حل خطأ filter is not a function)
+    const dealsArr = Array.isArray(deals) ? deals : [];
+
+    // Transform to your previous "trades" shape
+    const rawTrades = dealsArr.map(d => ({
+      symbol: d.symbol,
+      qty: Number(d.volume || d.lots || d.qty || 0),
+      pnl: Number(d.profit || d.pnl || 0),
+      side: d.type || d.entryType || d.side || null,
+      time: d.time || d.brokerTime || d.updateTime || null,
+      id: d.id || d.dealId || d.positionId || null
+    }));
+
+    // Normalize
+    const { cleaned, cumulativePnlBySymbol } =
+      normalizeTrades(rawTrades, symbolFilter);
 
     res.json({
-      count: normalized.length,
-      symbolFilter: symbol || null,
-      daysBack: days,
-      trades: normalized
+      count: cleaned.length,
+      symbolFilter: symbolFilter,
+      daysBack: daysBack,
+      trades: cleaned,
+      cumulativePnlBySymbol
     });
+
   } catch (error) {
     console.log("❌ /trades error:", error);
     res.status(500).json({ error: error.toString() });
   }
 });
+
 
 
 

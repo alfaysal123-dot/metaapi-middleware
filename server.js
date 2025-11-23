@@ -375,54 +375,110 @@ app.post("/close", async (req, res) => {
 });
 
 // --------------------------------------------------
-// GET TRADES / DEALS HISTORY (Normalized)
+// ✅ TRADES (History Deals) - Normalized for n8n
+// GET /trades?symbol=XAUUSD&daysBack=7&includeBalance=0
 // --------------------------------------------------
 app.get("/trades", async (req, res) => {
   try {
     const conn = await getConnection();
 
-    // Query params
-    const daysBack = Number(req.query.daysBack || 7);
-    const symbolFilter = req.query.symbol || null;
+    const symbolFilter = req.query.symbol
+      ? String(req.query.symbol).toUpperCase()
+      : null;
 
-    // Time range
+    const daysBack = req.query.daysBack
+      ? Number(req.query.daysBack)
+      : 7;
+
+    const includeBalance =
+      String(req.query.includeBalance || "0") === "1";
+
     const endTime = new Date();
-    const startTime = new Date();
-    startTime.setDate(endTime.getDate() - daysBack);
+    const startTime = new Date(endTime.getTime() - daysBack * 24 * 60 * 60 * 1000);
 
-    // ✅ جلب الـ deals من MetaApi
-    // بعض نسخ الـ SDK بتستخدم getDealsByTimeRange
-    // إذا عندك اسم مختلف (مثلاً getDealsByTimeRangeUtc) بدّله هون فقط
-    const deals = await conn.getDealsByTimeRange(startTime, endTime);
+    // ⬅️ MetaApi sometimes returns array, sometimes object with deals/items
+    const rawDeals = await conn.getDealsByTimeRange(startTime, endTime);
 
-    // تأكيد array قبل الفلترة (حل خطأ filter is not a function)
-    const dealsArr = Array.isArray(deals) ? deals : [];
+    let dealsArr = [];
+    if (Array.isArray(rawDeals)) {
+      dealsArr = rawDeals;
+    } else if (rawDeals?.deals && Array.isArray(rawDeals.deals)) {
+      dealsArr = rawDeals.deals;
+    } else if (rawDeals?.items && Array.isArray(rawDeals.items)) {
+      dealsArr = rawDeals.items;
+    } else if (rawDeals?.historyDeals && Array.isArray(rawDeals.historyDeals)) {
+      dealsArr = rawDeals.historyDeals;
+    }
 
-    // Transform to your previous "trades" shape
-    const rawTrades = dealsArr.map(d => ({
-      symbol: d.symbol,
-      qty: Number(d.volume || d.lots || d.qty || 0),
-      pnl: Number(d.profit || d.pnl || 0),
-      side: d.type || d.entryType || d.side || null,
-      time: d.time || d.brokerTime || d.updateTime || null,
-      id: d.id || d.dealId || d.positionId || null
-    }));
+    // ✅ Normalize deals into trades
+    let trades = dealsArr.map(d => {
+      const symbol = (d.symbol || d.ticker || d.epic || "").toString();
 
-    // Normalize
-    const { cleaned, cumulativePnlBySymbol } =
-      normalizeTrades(rawTrades, symbolFilter);
+      const qty = Number(
+        d.volume ??
+        d.lots ??
+        d.quantity ??
+        d.qty ??
+        0
+      );
+
+      const pnl = Number(
+        d.profit ??
+        d.profitLoss ??
+        d.pnl ??
+        0
+      );
+
+      const sideRaw = (d.type || d.side || d.entryType || "").toString();
+      const time = d.time || d.brokerTime || d.createdTime || d.doneTime || null;
+      const id = String(d.id || d.dealId || d.ticket || d.orderId || "");
+
+      return {
+        symbol,
+        qty,
+        pnl,
+        side: sideRaw,
+        time,
+        id
+      };
+    });
+
+    // ❌ remove balance/credit deals unless includeBalance=1
+    if (!includeBalance) {
+      trades = trades.filter(t => {
+        const s = (t.side || "").toUpperCase();
+        return !s.includes("BALANCE") && !s.includes("CREDIT");
+      });
+    }
+
+    // ❌ keep only real trade deals (volume > 0)
+    trades = trades.filter(t => Number(t.qty) > 0 && t.symbol);
+
+    // ✅ symbol filter (supports suffix like XAUUSDm)
+    if (symbolFilter) {
+      trades = trades.filter(t =>
+        t.symbol.toUpperCase().startsWith(symbolFilter)
+      );
+    }
+
+    // ✅ cumulative pnl by symbol
+    const cumulativePnlBySymbol = trades.reduce((acc, t) => {
+      const sym = t.symbol.toUpperCase();
+      acc[sym] = (acc[sym] || 0) + Number(t.pnl || 0);
+      return acc;
+    }, {});
 
     res.json({
-      count: cleaned.length,
-      symbolFilter: symbolFilter,
-      daysBack: daysBack,
-      trades: cleaned,
+      count: trades.length,
+      symbolFilter,
+      daysBack,
+      trades,
       cumulativePnlBySymbol
     });
 
-  } catch (error) {
-    console.log("❌ /trades error:", error);
-    res.status(500).json({ error: error.toString() });
+  } catch (err) {
+    console.log("❌ /trades error:", err);
+    res.status(500).json({ error: err.toString() });
   }
 });
 
